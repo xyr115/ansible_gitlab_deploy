@@ -1,0 +1,9 @@
+#!/bin/bash
+/usr/bin/letsencrypt renew
+for domain in /etc/letsencrypt/live/* ; do
+    cp /etc/letsencrypt/live/${domain}/fullchain.pem /srv/gitlab/config/ssl/${domain}.crt
+    cp /etc/letsencrypt/live/${domain}/privkey.pem /srv/gitlab/config/ssl/${domain}.pem
+done
+
+docker restart root_gitlab-updated-2_1
+service nginx reload

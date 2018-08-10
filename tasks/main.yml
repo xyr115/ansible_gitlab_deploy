@@ -1,0 +1,122 @@
+---
+- name: Add nginx repository key
+  apt_key: url=http://nginx.org/keys/nginx_signing.key
+
+- name: Add nginx repository
+  apt_repository: repo="deb http://nginx.org/packages/ubuntu/ {{ ansible_lsb.codename }} nginx" state=present update_cache=yes
+
+- name: Install packages
+  apt:
+    name: "{{ item }}"
+    state: present
+  with_items:
+    - nginx
+    - letsencrypt
+    - python-pip
+
+- name: Install docker python
+  pip:
+    name: "{{ item.name }}"
+    state: "{{ item.state }}"
+  with_items:
+  - { name: "docker-py", state: "absent"}
+  - { name: "docker", state: "present"}
+
+- name: Install docker-compose
+  pip:
+    name: docker-compose
+    state: present
+    version: 1.12.0
+
+- name: Generate strong DHE parameter - https://weakdh.org/
+  command: openssl dhparam -out /etc/ssl/dhparam.pem 2048 creates=/etc/ssl/dhparam.pem
+
+- name: Create required directories
+  file: path="{{ item }}" state=directory
+  with_items:
+  - /etc/nginx/sites-enabled
+  - /srv/gitlab/config/ssl
+
+- name: Create letsencrypt directories
+  file: path="/var/www/letsencrypt" state=directory owner=www-data group=www-data
+
+- name: Configure nginx main config
+  copy: src="nginx/nginx.conf" dest="/etc/nginx/nginx.conf"
+  notify: test nginx and reload
+
+- name: Configure letsencrypt site config
+  template: src="templates/nginx/sites-enabled/letsencrypt.conf" dest="/etc/nginx/sites-enabled/letsencrypt.conf"
+  notify: test nginx and reload
+
+- name: Force nginx reloads
+  meta: flush_handlers
+
+- name: Letsencrypt cert generation
+  shell: letsencrypt certonly -n --webroot -w /var/www/letsencrypt -m {{ gitlab_email_reply_to }} --agree-tos -d {{ item }}
+  args:
+    creates: /etc/letsencrypt/live/{{ item }}
+  with_items:
+    - "{{ gitlab_ssh_host }}"
+    - "{{ registry_host }}"
+
+- name: Configure nginx sites config
+  template: src="templates/nginx/sites-enabled/{{ item }}" dest="/etc/nginx/sites-enabled/{{ item }}"
+  notify: test nginx and reload
+  with_items:
+    - gitlab.conf
+    - registry.conf
+
+- name: Copy cron file
+  copy:
+    src: cron/letsencrypt
+    dest: /etc/cron.daily/letsencrypt
+    owner: root
+    group: root
+    mode: 0744
+
+- name: GitLab Config file
+  template: src="templates/gitlab/gitlab.rb.j2" dest="/srv/gitlab/config/gitlab.rb"
+
+- name: Copy Certificates
+  copy:
+    src: "/etc/letsencrypt/live/{{ item }}/fullchain.pem"
+    dest: "/srv/gitlab/config/ssl/{{ item}}.crt"
+    remote_src: yes
+  with_items:
+    - "{{ gitlab_ssh_host }}"
+    - "{{ registry_host }}"
+
+- name: Symlink Keys
+  copy:
+    src: "/etc/letsencrypt/live/{{ item }}/privkey.pem"
+    dest: "/srv/gitlab/config/ssl/{{ item }}.key"
+    remote_src: yes
+  with_items:
+    - "{{ gitlab_ssh_host }}"
+    - "{{ registry_host }}"
+
+- name: Container setup
+  docker_service:
+    project_name: gitlab
+    definition:
+      version: '2'
+      services:
+        omnibus:
+          hostname: '{{ gitlab_ssh_host }}'
+          image: gitlab/gitlab-ce:latest
+          environment:
+            GITLAB_OMNIBUS_CONFIG: |
+              external_url 'https://{{ gitlab_ssh_host }}'
+          volumes:
+          - /srv/gitlab/config:/etc/gitlab
+          - /srv/gitlab/logs:/var/log/gitlab
+          - /srv/gitlab/data:/var/opt/gitlab
+          ports:
+          - "127.0.0.1:81:81"
+          - "22:22"
+  register: output
+  when: provisioning != "CI"
+
+- name: Container restart
+  command: docker restart gitlab_omnibus_1
+  when: provisioning == "CI"

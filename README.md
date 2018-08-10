@@ -1,2 +1,1 @@
-# ansible_gitlab_deploy
-Deploy Gitlab via Ansible for Monitoring Prototype
+Deploying Gitlab Local Environment with Ansible

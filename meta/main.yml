@@ -1,0 +1,4 @@
+galaxy_info:
+  author: Deron Asbery Holmes
+  description: Role for installing Gitlab in Docker.
+  company: HealthReveal
